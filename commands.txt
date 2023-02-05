@@ -19,6 +19,10 @@ net group "Domain Admins" /domain
 net group "Domain Controllers" /domain
 nslookup CI-SERVICE-WIN2
 
+#Get a list of all Domain Computer Hostnames
+Get-ADComputer -Filter * | Select-Object -ExpandProperty Name | Out-File C:\hostnames.txt
+
+
 $pass=ConvertTo-SecureString "1qaz2wsx!QAZ@WSX" -AsPlainText -Force
 $cred=New-Object System.Management.Automation.PSCredential("DCO\sydney.hall", $pass)
 Invoke-Command -Credential $cred -ComputerName CI-SERVICE-WIN2 -ScriptBlock { net user BADMIN Sn3akyP@55 /add }
