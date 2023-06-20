@@ -1,0 +1,154 @@
+##Commands/Instructions ran on a networked machine to perform the following tasks:
+
+#Install prerequiste binaries
+#Clone the https://github.com/peasead/elastic-container Elastic-Contaier Project
+#Create an Elastic Package Registry in a Docker Container
+#Create a File Server Docker container to host an Elastic Artifact Registry
+#Download all requisite files to host in the Elastic Artifact Registry
+#Start the Elastic-container Project
+#Enable Alerting Rules manually through the Kibana UI, if the task fails during the Elastic Container Start
+
+##Commands/Instructions to be ran on an Internet connected machine
+
+#Run these commands to clone the Elastic-Container Project and start the containers
+cd ~
+apt update && apt upgrade -y
+apt install git docker.io jq curl -y
+git clone https://github.com/peasead/elastic-container
+cd ~/elastic-container
+./elastic-container stage
+curl https://raw.githubusercontent.com/jcac100/Internal/main/.env -O 
+nano .env
+#Edit the IP addresses to reflect those of your Internet connected machine (you can use localhost), then later when placed in the Splunk server, we will change them back
+./elastic-container start
+#If the script fails or hangs, run the following commands:
+./elastic-container stop
+./elastic-container destroy
+./elastic-container start
+#Once the script completes you can access the WEB UI at https://localhost:5601
+#Log into the Kibana Web UI with the Username: elastic and Password: tartans@!
+#Once you have logged in, go to the following link:
+https://localhost:5601/app/security/rules?
+#In the Web UI ensure all rules are enabled, and update any if prompted. 
+
+#Now we will set up the ELastic Artifact Registry which will host all required files that typically would be accessed via the internet. Run the following commands:
+docker pull nginx
+docker save nginx -o nginx.tar
+cat > nginx.conf << 'EOF'
+# set compatible etag format
+map $sent_http_etag $elastic_etag {
+  "~(.*)-(.*)" "$1$2";
+}
+server {
+  root /app/static;
+  location / {
+    add_header ETag "$elastic_etag";
+  }
+}
+EOF
+docker run -v "$PWD"/nginx.conf:/etc/nginx/conf.d/default.conf:ro -v "$PWD"/static:/app/static:ro -p 80:80 nginx
+
+#Now you can access your Fileserver at http://localhost:80
+#Now we have to download all the files that we will be hosting, and place them in the static dir which is mounted as read only by our nginx container
+cd ~/elastic-container
+export ENDPOINT_VERSION=8.6.1 && wget -P downloads/endpoint/manifest https://artifacts.security.elastic.co/downloads/endpoint/manifest/artifacts-$ENDPOINT_VERSION.zip && zcat -q downloads/endpoint/manifest/artifacts-$ENDPOINT_VERSION.zip | jq -r '.artifacts | to_entries[] | .value.relative_url' | xargs -I@ curl "https://artifacts.security.elastic.co@" --create-dirs -o ".@"
+#Now you will have a downloads folder with the nessecary artifacts for Elastic Endpoint, but there are some more artifacts and directories we may need
+mkdir ~/elastic-container/static/beats
+mkdir ~/elastic-container/static/beats/elastic-agent/
+cp ~/elastic-container/downloads* ~/elastic-container/static
+cd ~/elastic-container/static/beats/elastic-agent/
+wget https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-8.6.2-linux-x86_64.tar.gz 
+wget https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-8.6.2-amd64.deb
+wget https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-8.6.2-x86_64.rpm
+wget https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-8.6.2-windows-x86_64.zip
+#Now you should be able to download those files from your fileserver, which you can test by going to the following url:
+http://localhost/beats/elastic-agent/elastic-agent-8.6.2-linux-x86_64.tar.gz
+#Now we are going to set up a Package Registry to go with our Artifact Registry
+docker pull docker.elastic.co/package-registry/distribution:8.6.2
+docker save -o package-registry-8.6.2.tar docker.elastic.co/package-registry/distribution:8.6.2
+docker load -i package-registry-8.6.2.tar
+docker run -it -p 8080:8080 docker.elastic.co/package-registry/distribution:8.6.2
+echo "xpack.fleet.registryUrl: "http://localhost:8080" >> ~/elastic-container/kibana.yml
+#Now go to the following link and add the url for your Artifact Registry, http://localhost set this as the default: 
+https://localhost:5601/app/fleet/settings/create-download-sources
+#Now we have to add the Elastic Defend Integration, and configure it to use our local package registry
+https://localhost:5601/app/security/administration/endpoints
+#Add the Defend Integration, name it defend and select Complete EDR, and save
+#Once the Integration is saved to your new Agent Policy, go to the below link, select Agent-Policy-1, select the defend integration, and scroll to the Advanced settings
+https://localhost:5601/app/fleet/policies
+#In the Advanced Settings, enter the below value in these 3 fields: linux.advanced.artifacts.global.base_url mac.advanced.artifacts.global.base_url windows.advanced.artifacts.global.base_url
+http://10.0.11.146
+#Save your changes
+
+#Now we are ready to export all 5 of our containers as zip files to be ported over to the Airgapped environment
+cd ~/elastic-container
+mkdir containers
+cd containers/
+docker ps
+docker stop <CONTAINER_ID>
+#Stop all 5 containers
+docker export <CONTAINER_ID_OF_PACKAGE_REGISTRY> > package-registry.tar
+docker export <CONTAINER_ID_OF_NGINX> >artifact-registry.tar
+docker export <CONTAINER_ID_OF_ECP-FLEET-SERVER> > ecp-fleet-server.tar
+docker export <CONTAINER_ID_OF_ECP-KIBANA> > ecp-kibana.tar
+docker export <CONTAINER_ID_OF_ECP-ELASTICSEARCH> > ecp-elasticsearch.tar
+
+#We are going to need the binaries for docker engine and docker compose, run the below commands:
+cd ~/elastic-container
+wget -O docker https://download.docker.com/linux/static/stable/x86_64/docker-24.0.2.tgz
+tar -xvf docker
+wget -O docker-compose https://github.com/docker/compose/releases/download/v2.18.1/docker-compose-linux-x86_64
+chmod +x docker-compose
+
+#Now all of our files should be located in the ~/elastic-container directory. Zip a copy of the directory with the File Explorer, you may have to chown -R the folder
+
+
+********************************************************************************************************************************************************************************************************
+
+##Upload the file to the Crucible Web UI, then mount the ISO from the Splunk Server VM
+
+#Command to mount the attached ISO (run on Splunk server once Media is attached, may take 2 attempts):
+mkdir /mnt/test
+mount /dev/sr0 /mnt/test
+
+#Once mounted, copy the file to the Desktop then unmount
+cp /mnt/test/elastic-container.zip /root/Desktop/
+tar xzvf /root/Desktop/docker
+mv /root/Desktop/docker/* /usr/local/bin
+rm /root/Desktop/docker
+umount /dev/sr0 /mnt/test
+
+#Once unmounted, attach the Docker-compose binary, mount it, and move it to the desktop
+mount /dev/sr0 /mnt/test
+cp /mnt/test/docker-compose-linux-x86_64 /usr/local/bin/docker-compose
+chmod +x /usr/local/bin/docker-compose
+umount /dev/sr0/ /mnt/test
+
+#Now you should be able to run the docker and docker-compose commands from anywhere
+#Attach and mount all the containers, one by one, then copy them to /root/Desktop/containers
+#Now we will load the docker containers and images and start them
+cd /root/Desktop/containers
+docker load < nginx.tar
+docker run -v /root/Desktop/elastic-container/nginx.conf:/etc/nginx/conf.d/default.conf:ro -p 80:80 nginx
+docker run -it -p 8080:8080 docker.elastic.co/package-registry/distribution:8.6.2
+#Ensure you can access the web ui for both the package and artifact registries at localhost:80 and localhost:8080 before continuing
+#Ensure the following line is at the bottom of /root/Desktop/elastic-container/kibana.yml
+xpack.fleet.registryUrl: "http://10.0.11.146:8080"
+#Start the ECP containers
+cd /root/Desktop/elastic-container
+./elastic-container start
+#Once the script completes, log in with the creds in the .env file
+#Add the Elastic Defend integration by going to the below URL
+https://10.0.11.146:5601/app/security/administration/endpoints
+#Configure Fleet to use the artifact registry
+https://10.0.11.146:5601/app/fleet/settings/create-download-sources
+#Edit the Elastic Defend Integration to use the package registry by updating these 3 values in advanced settings: 
+#linux.advanced.artifacts.global.base_url
+#mac.advanced.artifacts.global.base_url
+#windows.advanced.artifacts.global.base_url
+
+#You should now be able to deploy agents with the Defend Integration 
+#I recommend installing interactively rather than the one line that the Web UI provides, and dont forget --insecure
+##
+
+##Shoutout to https://github.com/peasead/elastic-container, Andrew Pease and the rest of the Elastic Team. 
