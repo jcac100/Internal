@@ -2,8 +2,8 @@
 
 # --- CONFIGURATION ---
 # Update these to match your current Ngrok listener
-NGROK_HOST="6.tcp.us-cal-1.ngrok.io"
-NGROK_PORT="19738"
+NGROK_HOST="8.tcp.us-cal-1.ngrok.io"
+NGROK_PORT="12224"
 
 # The VNC port to forward (5901 is standard for Display :1)
 TARGET_PORT="5901"
