@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration
-TARGET="http://127.0.0.1:8080"
+TARGET="http://172.16.1.24:8080"
 OUTPUT_FILE="/tmp/schema_walk_output.txt"
 BINARY_DIR="/tmp/schema_artifacts"
 
